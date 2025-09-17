@@ -3,7 +3,10 @@
 
 const express = require("express");
 const app = express();
-app.use(express.json());
+
+// Increase JSON payload size limit to handle large requests
+app.use(express.json({ limit: '50mb' }));
+app.use(express.urlencoded({ limit: '50mb', extended: true }));
 
 // CORS - for dev left open; for production replace "*" with your domain
 app.use((req, res, next) => {
@@ -68,4 +71,3 @@ app.post("/api/myapi", async (req, res) => {
 
 const port = process.env.PORT || 5501;
 app.listen(port, () => console.log(`Listening on ${port}`));
-
