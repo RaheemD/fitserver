@@ -7,10 +7,26 @@ app.use(express.json());
 
 // CORS - for dev left open; for production replace "*" with your domain
 app.use((req, res, next) => {
+  // You can restrict "*" to your frontend origin (e.g. "https://fitmate.netlify.app")
   res.setHeader("Access-Control-Allow-Origin", "*");
+
+  // Allowed methods
   res.setHeader("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
-  res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
-  if (req.method === "OPTIONS") return res.sendStatus(204);
+
+  // Allow the headers you expect from the client.
+  // Add any custom header names your frontend sends (case-insensitive).
+  res.setHeader(
+    "Access-Control-Allow-Headers",
+    "Content-Type, Authorization, X-Title, HTTP-Referer, X-Requested-With"
+  );
+
+  // If you ever want cookies/auth:
+  // res.setHeader("Access-Control-Allow-Credentials", "true");
+
+  if (req.method === "OPTIONS") {
+    // Preflight response — OK
+    return res.status(204).send("");
+  }
   next();
 });
 
@@ -52,3 +68,4 @@ app.post("/api/myapi", async (req, res) => {
 
 const port = process.env.PORT || 5501;
 app.listen(port, () => console.log(`Listening on ${port}`));
+
