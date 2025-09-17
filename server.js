@@ -49,25 +49,33 @@ app.post("/api/myapi", async (req, res) => {
     };
 
     // Use global fetch provided by Node 18+
-    const upstream = await fetch(OPENROUTER_URL, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "Authorization": `Bearer ${key}`
-      },
-      body: JSON.stringify(payload),
-    });
-
-    const text = await upstream.text();
-    let data;
-    try { data = text ? JSON.parse(text) : null; } catch (e) { data = { raw: text }; }
-
-    return res.status(upstream.status).json(data);
-  } catch (err) {
-    console.error("Server error:", err);
-    return res.status(502).json({ error: String(err) });
-  }
+    // --- proxied request with debug logging ---
+const upstream = await fetch(OPENROUTER_URL, {
+  method: "POST",
+  headers: {
+    "Content-Type": "application/json",
+    "Authorization": `Bearer ${key}`
+  },
+  body: JSON.stringify(payload),
 });
 
-const port = process.env.PORT || 5501;
-app.listen(port, () => console.log(`Listening on ${port}`));
+// Read full upstream response text
+const upstreamText = await upstream.text().catch(() => "");
+
+// Log upstream status + body to Render logs
+console.log(">> Upstream status:", upstream.status);
+console.log(">> Upstream body (truncated 10k):", upstreamText.slice(0, 10000));
+
+// If upstream returned non-OK, forward status & body to the client for debugging
+if (!upstream.ok) {
+  // Return the upstream raw text and status
+  res.status(upstream.status).type("text/plain").send(upstreamText || `Upstream returned status ${upstream.status}`);
+  return;
+}
+
+// Upstream OK -> parse JSON if possible, else return raw text
+let data;
+try { data = upstreamText ? JSON.parse(upstreamText) : null; } catch (e) { data = { raw: upstreamText }; }
+return res.status(200).json(data);
+
+
