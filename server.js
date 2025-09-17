@@ -25,7 +25,8 @@ app.use((req, res, next) => {
 });
 
 // OpenRouter endpoint (proxy target)
-const OPENROUTER_URL = "https://api.openrouter.ai/v1/chat/completions";
+const OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions";
+
 
 // Main route used by your frontend: POST to /api/myapi
 app.post("/api/myapi", async (req, res) => {
@@ -94,3 +95,4 @@ app.get("/_health", (req, res) => res.status(200).send("ok"));
 
 const port = process.env.PORT || 5501;
 app.listen(port, () => console.log(`Listening on ${port}`));
+
