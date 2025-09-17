@@ -44,7 +44,7 @@ app.post("/api/myapi", async (req, res) => {
       payload = body;
     } else {
       payload = {
-        model: body.model || "openai/gpt-4.1-mini",
+        model: body.model || "google/gemini-2.0-flash-lite",
         messages: [{ role: "user", content: String(body.prompt || "Hello") }],
         max_tokens: body.max_tokens || 300,
         temperature: typeof body.temperature === "number" ? body.temperature : 0.2
@@ -95,4 +95,5 @@ app.get("/_health", (req, res) => res.status(200).send("ok"));
 
 const port = process.env.PORT || 5501;
 app.listen(port, () => console.log(`Listening on ${port}`));
+
 
