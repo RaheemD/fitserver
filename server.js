@@ -1,10 +1,7 @@
 // server.js
-// Simple Express proxy for OpenRouter. Keeps API key on the server (never exposed to browser).
+// Simple Express proxy for OpenRouter. Uses Node 18+ built-in fetch (no node-fetch dependency).
 
 const express = require("express");
-// node-fetch v3 is ESM, so use dynamic import wrapper to call it in CommonJS
-const fetch = (...args) => import("node-fetch").then(m => m.default(...args));
-
 const app = express();
 app.use(express.json());
 
@@ -24,7 +21,6 @@ app.post("/api/myapi", async (req, res) => {
     const key = process.env.OPENROUTER_API_KEY;
     if (!key) return res.status(500).json({ error: "Server misconfigured: OPENROUTER_API_KEY missing" });
 
-    // Accept either { prompt } or full provider payload { model, messages, ... }
     const body = req.body || {};
     const payload = body.messages ? body : {
       model: body.model || "openai/gpt-4.1-mini",
@@ -33,6 +29,7 @@ app.post("/api/myapi", async (req, res) => {
       temperature: typeof body.temperature === "number" ? body.temperature : 0.2
     };
 
+    // Use global fetch provided by Node 18+
     const upstream = await fetch(OPENROUTER_URL, {
       method: "POST",
       headers: {
