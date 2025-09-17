@@ -44,7 +44,7 @@ app.post("/api/myapi", async (req, res) => {
       payload = body;
     } else {
       payload = {
-        model: body.model || "google/gemini-2.0-flash-lite-001",
+        model: body.model || "google/gemini-2.5-flash-lite",
         messages: [{ role: "user", content: String(body.prompt || "Hello") }],
         max_tokens: body.max_tokens || 300,
         temperature: typeof body.temperature === "number" ? body.temperature : 0.2
