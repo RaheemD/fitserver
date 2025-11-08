@@ -36,62 +36,66 @@ app.post("/api/myapi", async (req, res) => {
       return res.status(500).json({ error: "Server misconfigured: OPENROUTER_API_KEY missing" });
     }
 
-    const body = req.body || {};
+    // --- Safe body reader ---
+    let bodyText = "";
+    req.on("data", chunk => (bodyText += chunk));
+    req.on("end", async () => {
+      let body;
+      try {
+        body = JSON.parse(bodyText || "{}");
+      } catch (e) {
+        console.error("❌ Invalid JSON body from frontend:", bodyText);
+        return res.status(400).send("Invalid JSON");
+      }
 
-    // Normalize payload: accept either full OpenRouter payload or simple { prompt: "..." }
-    let payload;
-    if (body.messages || body.model) {
-      payload = body;
-    } else {
-      payload = {
-        model: body.model || "google/gemini-2.5-flash",
-        messages: [{ role: "user", content: String(body.prompt || "Hello") }],
-        max_tokens: body.max_tokens || 300,
-        temperature: typeof body.temperature === "number" ? body.temperature : 0.2
-      };
-      if (body.image_url) payload.image_url = body.image_url;
-      if (body.image_base64) payload.image_base64 = body.image_base64;
-    }
+      // Normalize payload (same logic as before)
+      let payload;
+      if (body.messages || body.model) {
+        payload = body;
+      } else {
+        payload = {
+          model: body.model || "google/gemini-2.5-flash",
+          messages: [{ role: "user", content: String(body.prompt || "Hello") }],
+          max_tokens: body.max_tokens || 300,
+          temperature: typeof body.temperature === "number" ? body.temperature : 0.2,
+        };
+        if (body.image_url) payload.image_url = body.image_url;
+        if (body.image_base64) payload.image_base64 = body.image_base64;
+      }
 
-    // --- proxied request with debug logging ---
-    const upstream = await fetch(OPENROUTER_URL, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "Authorization": `Bearer ${key}`
-      },
-      body: JSON.stringify(payload),
+      // --- proxy to OpenRouter ---
+      const upstream = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${key}`,
+        },
+        body: JSON.stringify(payload),
+      });
+
+      const text = await upstream.text();
+      console.log(">> Upstream status:", upstream.status);
+      console.log(">> Upstream body (first 10000 chars):", text.slice(0, 10000));
+
+      let data;
+      try {
+        data = JSON.parse(text);
+      } catch {
+        data = { raw: text };
+      }
+
+      res.status(upstream.status).json(data);
     });
-
-    // Read full upstream response text and log a truncated preview
-    const upstreamText = await upstream.text().catch(() => "");
-    console.log(">> Upstream status:", upstream.status);
-    console.log(">> Upstream body (first 10000 chars):", upstreamText.slice(0, 10000));
-
-    if (!upstream.ok) {
-      // Forward upstream status and raw body to client for debugging
-      const replyText = upstreamText || `Upstream returned status ${upstream.status}`;
-      res.status(upstream.status).type("text/plain").send(replyText);
-      return;
-    }
-
-    // Parse JSON if possible, otherwise return raw
-    let data;
-    try {
-      data = upstreamText ? JSON.parse(upstreamText) : null;
-    } catch (e) {
-      data = { raw: upstreamText };
-    }
-
-    return res.status(200).json(data);
   } catch (err) {
     console.error("Server error:", err);
-    return res.status(502).json({ error: String(err) });
+    res.status(502).json({ error: String(err) });
   }
 });
+
 
 // Health / quick check
 app.get("/_health", (req, res) => res.status(200).send("ok"));
 
 const port = process.env.PORT || 5501;
 app.listen(port, () => console.log(`Listening on ${port}`));
+
