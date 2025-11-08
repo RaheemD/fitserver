@@ -1,35 +1,48 @@
 // server.js
-// Hardened Node/Express proxy for OpenRouter with timeout, retry, and connection-safety headers.
-// Paste this file exactly and redeploy to Render.
+// Full replacement - paste this file exactly to Render and redeploy.
 
 const express = require("express");
 const http = require("http");
-const fetch = global.fetch || require("node-fetch"); // Render/Node18+ should have global fetch
-const AbortController = global.AbortController || require("abort-controller");
+const process = require("process");
+
+// fetch + AbortController polyfills if needed
+let fetchImpl = global.fetch;
+let AbortControllerImpl = global.AbortController;
+try {
+  if (!fetchImpl) fetchImpl = require("node-fetch");
+} catch (e) {
+  // node-fetch may not be installed; Render / Node18+ normally has global fetch
+}
+try {
+  if (!AbortControllerImpl) AbortControllerImpl = require("abort-controller");
+} catch (e) {}
 
 const app = express();
 
-// Security: disable X-Powered-By
+// Security
 app.disable("x-powered-by");
 
-// Increase JSON/body size to handle base64 images if needed (adjust if necessary).
+// Body size
 app.use(express.json({ limit: "50mb" }));
 app.use(express.urlencoded({ limit: "50mb", extended: true }));
 
-// CORS - allow your frontend origin(s). Replace or narrow down before production.
+// CORS - limited to your frontend origin(s). Replace or add origins if needed.
 const ALLOWED_ORIGINS = [
   "https://fitnessmate.netlify.app",
   "http://localhost:5500",
   "http://127.0.0.1:5500"
 ];
+
 app.use((req, res, next) => {
   const origin = req.headers.origin;
-  if (ALLOWED_ORIGINS.includes(origin)) {
+  if (origin && ALLOWED_ORIGINS.includes(origin)) {
     res.setHeader("Access-Control-Allow-Origin", origin);
     res.setHeader("Access-Control-Allow-Credentials", "true");
   } else {
-    res.setHeader("Access-Control-Allow-Origin", "*"); // fallback for debugging
+    // during debugging allow any origin (change to strict in prod)
+    res.setHeader("Access-Control-Allow-Origin", "*");
   }
+
   res.setHeader("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
   res.setHeader(
     "Access-Control-Allow-Headers",
@@ -37,7 +50,7 @@ app.use((req, res, next) => {
   );
   res.setHeader("Access-Control-Expose-Headers", "Content-Length, Content-Type");
 
-  // Ask the proxy/client to close the connection after this response (reduces reuse issues)
+  // Ask proxies/clients to close connections after response (reduces reuse issues)
   res.setHeader("Connection", "close");
   res.setHeader("Keep-Alive", "timeout=5, max=0");
 
@@ -48,32 +61,33 @@ app.use((req, res, next) => {
 // Upstream target
 const OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions";
 
-// Utility: fetch with timeout and a single retry for transient failures
+// Helper: fetch with timeout + 1 retry for transient failures
 async function fetchWithTimeoutAndRetry(url, options = {}, timeoutMs = 60000, maxRetries = 1) {
+  const AbortCtr = AbortControllerImpl || global.AbortController;
   let lastErr = null;
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
-    const controller = new AbortController();
-    const id = setTimeout(() => controller.abort(), timeoutMs);
-    try {
-      const merged = { ...options, signal: controller.signal };
-      const start = Date.now();
-      const resp = await fetch(url, merged);
-      clearTimeout(id);
+    const controller = AbortCtr ? new AbortCtr() : null;
+    const signal = controller ? controller.signal : undefined;
+    const timer = controller ? setTimeout(() => controller.abort(), timeoutMs) : null;
 
-      // if 5xx, treat as transient and retry
+    try {
+      const merged = { ...options, signal };
+      const resp = await (fetchImpl || global.fetch)(url, merged);
+      if (timer) clearTimeout(timer);
+
+      // treat 5xx as retryable (transient)
       if (resp.status >= 500 && attempt < maxRetries) {
-        lastErr = new Error(`Upstream ${resp.status} - will retry (attempt ${attempt + 1})`);
-        console.warn(new Date().toISOString(), lastErr.message);
-        await new Promise((r) => setTimeout(r, 300 * (attempt + 1))); // small backoff
+        lastErr = new Error(`Upstream ${resp.status} (will retry)`);
+        await new Promise((r) => setTimeout(r, 300 * (attempt + 1)));
         continue;
       }
       return resp;
     } catch (err) {
-      clearTimeout(id);
+      if (timer) clearTimeout(timer);
       lastErr = err;
-      // if aborted or network error, retry if we still have attempts
-      console.warn(new Date().toISOString(), "Fetch attempt failed:", err && err.message);
+      // if retry remains, backoff and try again
       if (attempt < maxRetries) {
+        console.warn(new Date().toISOString(), "Fetch attempt failed, will retry:", err && err.message);
         await new Promise((r) => setTimeout(r, 300 * (attempt + 1)));
         continue;
       }
@@ -83,9 +97,9 @@ async function fetchWithTimeoutAndRetry(url, options = {}, timeoutMs = 60000, ma
   throw lastErr;
 }
 
-// Main route used by your frontend: POST to /api/myapi
+// Main proxy endpoint
 app.post("/api/myapi", async (req, res) => {
-  const t0 = Date.now();
+  const start = Date.now();
   try {
     const key = process.env.OPENROUTER_API_KEY;
     if (!key) {
@@ -94,8 +108,6 @@ app.post("/api/myapi", async (req, res) => {
     }
 
     const body = req.body || {};
-
-    // Normalize payload
     let payload;
     if (body.messages || body.model) {
       payload = body;
@@ -110,55 +122,66 @@ app.post("/api/myapi", async (req, res) => {
       if (body.image_base64) payload.image_base64 = body.image_base64;
     }
 
-    // Proxy to OpenRouter with timeout + retry
+    // Proxy call with timeout + retry
     const upstream = await fetchWithTimeoutAndRetry(
       OPENROUTER_URL,
       {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          "Authorization": `Bearer ${key}`,
+          Authorization: `Bearer ${key}`,
           "User-Agent": "fitnessmate-proxy/1.0"
         },
         body: JSON.stringify(payload)
       },
-      60000, // 60s timeout per attempt
-      1 // one retry allowed
+      60000,
+      1
     );
 
-    // Read full upstream response text
     const upstreamText = await upstream.text().catch(() => "");
-    console.log(new Date().toISOString(), "Upstream status:", upstream.status, "elapsed:", Date.now() - t0, "ms");
-    console.log("Upstream body preview:", upstreamText.slice(0, 1000));
+    const elapsed = Date.now() - start;
+
+    // Log a preview to help debugging
+    console.log(new Date().toISOString(), "Upstream status:", upstream.status, "elapsed_ms:", elapsed);
+    console.log("Upstream preview:", upstreamText ? upstreamText.slice(0, 2000) : "(empty)");
+
+    const trimmed = (upstreamText || "").trim();
+    // If upstream returned HTML/error page, convert to JSON error for the client
+    if (trimmed && trimmed[0] === "<") {
+      return res.status(502).json({
+        ok: false,
+        error: "Upstream returned non-JSON (HTML) — see upstreamPreview",
+        upstreamStatus: upstream.status,
+        upstreamPreview: upstreamText.slice(0, 2000)
+      });
+    }
 
     if (!upstream.ok) {
-      // Forward upstream status and raw body to client for debugging
-      const replyText = upstreamText || `Upstream returned status ${upstream.status}`;
-      // Ensure CORS headers are present on error too
-      res.status(upstream.status).type("text/plain").send(replyText);
-      return;
+      return res.status(upstream.status).json({
+        ok: false,
+        error: "Upstream returned error",
+        upstreamStatus: upstream.status,
+        upstreamBody: upstreamText
+      });
     }
 
-    // Parse JSON if possible
-    let data;
+    // Try parse as JSON; if parse fails, return raw under "raw"
     try {
-      data = upstreamText ? JSON.parse(upstreamText) : null;
+      const data = upstreamText ? JSON.parse(upstreamText) : null;
+      return res.status(200).json(data);
     } catch (e) {
-      data = { raw: upstreamText };
+      return res.status(200).json({ ok: true, raw: upstreamText });
     }
-
-    // Final response (with connection close header already set by middleware)
-    return res.status(200).json(data);
   } catch (err) {
-    console.error(new Date().toISOString(), "Server error:", err && err.stack ? err.stack : err);
+    console.error(new Date().toISOString(), "Server error in /api/myapi:", err && err.stack ? err.stack : err);
     return res.status(502).json({ error: String(err) });
   }
 });
 
-// Health / quick check
+// Health check
 app.get("/_health", (req, res) => res.status(200).send("ok"));
 
-// Explicitly create http server (helps avoid any accidental http2 usage)
+// Create explicit HTTP server (keeps behavior consistent)
 const port = process.env.PORT || 5501;
 const server = http.createServer(app);
 server.listen(port, () => console.log(`Listening on ${port}`));
